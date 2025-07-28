@@ -9,31 +9,15 @@ warnings.filterwarnings('ignore')
 
 
 class ZuCoTrialLengthAnalyzer:
-    """Analyzes trial lengths in ZuCo dataset for determining optimal resampling length."""
+    
     
     def __init__(self, root_path, n_workers=None):
-        """
-        Initialize the analyzer.
-        
-        Args:
-            root_path: Path to directory containing ZuCo .mat files
-            n_workers: Number of parallel workers (default: CPU count - 1)
-        """
         self.root_path = Path(root_path)
         self.n_workers = n_workers if n_workers else max(1, cpu_count() - 2)
         self.trial_lengths = None
         self.stats = None
         
     def analyze(self, max_files=None):
-        """
-        Analyze trial lengths in the dataset.
-        
-        Args:
-            max_files: Maximum number of files to analyze (None for all)
-            
-        Returns:
-            Dictionary containing statistics and numpy array of trial lengths
-        """
         mat_files = list(self.root_path.glob("*.mat"))
         
         if max_files:

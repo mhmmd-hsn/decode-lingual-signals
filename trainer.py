@@ -1,354 +1,347 @@
-import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.model_selection import StratifiedKFold
+from torch.utils.data import DataLoader, Subset
+from visualization import Visualization
+from sklearn.metrics import accuracy_score
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import os
-import time
-from sklearn.model_selection import StratifiedKFold, cross_val_predict, cross_val_score
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.naive_bayes import GaussianNB
-from lightgbm import LGBMClassifier
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
-from sklearn.metrics import classification_report, roc_auc_score, roc_curve, auc
-from sklearn.pipeline import Pipeline
-import joblib
+import numpy as np
+import torch.nn.functional as F
 
-class EEGClassifierEvaluator:
-    def __init__(self, random_state=42, n_folds=5):
+
+class Trainer:
+    def __init__(self, model, dataset, lr=0.0001, epochs=500, batch_size=80, 
+                 num_folds=3, save_best=True, save_path="Outputs/best_model.pth",
+                 early_stopping=False, patience=10):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = model.to(self.device)
+        self.dataset = dataset
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.num_folds = num_folds
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0005)
+        self.save_best = save_best
+        self.save_path = save_path
+        self.early_stopping = early_stopping
+        self.patience = patience
+        
+    
+        self.best_acc = 0  
+        self.visualizer = Visualization()
+        self.all_preds = []
+        self.all_labels = []
+        self.best_fold_metrics = None  
+        
+        
+        self.train_losses = []
+        self.train_accuracies = []
+        self.val_losses = []
+        self.val_accuracies = []
+        
+       
+        self.best_results = pd.DataFrame(columns=["Split", "Train Accuracy", "Valid Accuracy", "Epoch Number"])
+        
+        if self.early_stopping and not self.save_best:
+            print("Warning: Early stopping is enabled but save_best is False. The best model will not be saved.")
+
+        assert hasattr(self.dataset, 'labels'), "Dataset must have a 'labels' attribute for stratification."
+
+    def train_kfold(self):
+        """Train the model using k-fold cross-validation."""
+        skf = StratifiedKFold(n_splits=self.num_folds, shuffle=True, random_state=42)
+        
+        fold_results = []
+
+        for fold, (train_idx, val_idx) in enumerate(skf.split(range(len(self.dataset)), self.dataset.labels)):
+            print(f"\nFold {fold + 1}/{self.num_folds}")
+            
+            
+            train_subset = Subset(self.dataset, train_idx)
+            val_subset = Subset(self.dataset, val_idx)
+            pin_memory = True if self.device.type == 'cuda' else False
+            train_loader = DataLoader(train_subset, batch_size=self.batch_size, shuffle=True, pin_memory=pin_memory)
+            val_loader = DataLoader(val_subset, batch_size=self.batch_size, shuffle=False, pin_memory=pin_memory)
+
+           
+            self.model = self.model.__class__(num_timepoints=self.model.agacn1.weight.shape[0], 
+                                              num_classes=self.model.fc.out_features).to(self.device)
+            self.optimizer = optim.Adam(self.model.parameters(), lr=0.0001, weight_decay=0.0005)
+            
+           
+            fold_train_losses, fold_train_accs = [], []
+            fold_val_losses, fold_val_accs = [], []
+            
+            
+            best_fold_acc = 0
+            best_fold_epoch = 0
+            epochs_no_improve = 0
+            
+            for epoch in range(self.epochs):
+                
+                avg_train_loss, train_acc, _, _ = self._train_epoch(train_loader)
+                val_loss, val_acc, _, _ = self._validate_epoch(val_loader)
+
+                fold_train_losses.append(avg_train_loss)
+                fold_train_accs.append(train_acc)
+                fold_val_losses.append(val_loss)
+                fold_val_accs.append(val_acc)
+
+
+                if epoch % 5 == 0:
+                    print(f'Epoch {epoch+1}, Train Loss: {avg_train_loss:.4f}, '
+                          f'Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}')
+                
+                if val_acc > best_fold_acc:
+                    best_fold_acc = val_acc
+                    best_fold_epoch = epoch
+                    epochs_no_improve = 0
+                    
+                    if self.save_best and val_acc > self.best_acc:
+                        self.best_acc = val_acc
+                        self.best_fold_metrics = (fold_train_losses, fold_train_accs, fold_val_losses, fold_val_accs)
+                        torch.save(self.model.state_dict(), self.save_path)
+                else:
+                    epochs_no_improve += 1
+                
+                
+                if self.early_stopping and epochs_no_improve >= self.patience:
+                    print(f"Early stopping triggered at epoch {epoch+1} for fold {fold+1}")
+                    break
+            
+            fold_results.append([f"Fold {fold+1}", fold_train_accs[best_fold_epoch], 
+                                 best_fold_acc, best_fold_epoch+1])
+        
+        for result in fold_results:
+            self.best_results = self.add_row(result)
+        
+        
+        column_means = self.best_results.drop(columns=["Split"]).mean()
+        average_row = pd.DataFrame([["Average"] + column_means.tolist()], columns=self.best_results.columns)
+        self.best_results = pd.concat([self.best_results, average_row], ignore_index=True)
+        
+        print(self.best_results)
+
+        if self.best_fold_metrics:
+            self.visualizer.plot_loss(self.best_fold_metrics[0], self.best_fold_metrics[2], save_path="Outputs/kfold_loss_curve.png")
+            self.visualizer.plot_accuracy(self.best_fold_metrics[1], self.best_fold_metrics[3], save_path="Outputs/kfold_accuracy_curve.png")
+        
+        return self.best_results
+
+    def train_split(self, train_ratio=0.7, val_ratio=0.3, test_ratio=0.0, random_state=42):
         """
-        Initialize the classifier evaluator.
+        Train using a simple split (train/valid or train/valid/test).
         
         Parameters:
-        -----------
-        random_state : int
-            Random seed for reproducibility
-        n_folds : int
-            Number of folds for cross-validation
+        - train_ratio: Proportion of data for training
+        - val_ratio: Proportion of data for validation
+        - test_ratio: Proportion of data for testing (if 0, no test set is created)
+        - random_state: Random seed for reproducibility
         """
-        self.random_state = random_state
-        self.n_folds = n_folds
-        self.results = {}
-        self.best_model = None
-        self.best_model_name = None
-        self.label_encoder = LabelEncoder()
+        assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-10, "Ratios must sum to 1"
         
-        # Define the classifiers to evaluate
-        self.classifiers = {
-            'K-Nearest Neighbors': KNeighborsClassifier(n_neighbors=5),
-            'Support Vector Machine': SVC(probability=True, random_state=random_state),
-            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=random_state),
-            'Naive Bayes': GaussianNB(),
-            # 'LightGBM': LGBMClassifier(random_state=random_state)
-        }
-    
-    def fit(self, X, y):
-        """
-        Fit and evaluate all classifiers using cross-validation.
-        
-        Parameters:
-        -----------
-        X : pandas DataFrame or numpy array
-            The input features
-        y : array-like
-            Target variable (class labels)
-            
-        Returns:
-        --------
-        self : object
-            Returns self
-        """
-        # Convert to numpy arrays if needed
-        if isinstance(X, pd.DataFrame):
-            X = X.values
-        if isinstance(y, pd.Series):
-            y = y.values
-            
-    
-        if not np.issubdtype(y.dtype, np.number):
-            y = self.label_encoder.fit_transform(y)
-            self.classes_ = self.label_encoder.classes_
+        if test_ratio > 0:
+            train_idx, val_idx, test_idx = self._custom_split(
+                self.dataset, train_ratio, val_ratio, test_ratio, random_state
+            )
+            test_subset = Subset(self.dataset, test_idx)
+            test_loader = DataLoader(test_subset, batch_size=self.batch_size, shuffle=False, 
+                                     pin_memory=(self.device.type == 'cuda'))
         else:
-            self.classes_ = np.unique(y)
-            
-        self.n_classes = len(self.classes_)
+            train_idx, val_idx = self._custom_split(
+                self.dataset, train_ratio, val_ratio, 0, random_state
+            )
+            test_loader = None
         
-        # Create cross-validation folds
-        skf = StratifiedKFold(n_splits=self.n_folds, shuffle=True, random_state=self.random_state)
+        train_subset = Subset(self.dataset, train_idx)
+        val_subset = Subset(self.dataset, val_idx)
         
-        # Prepare results storage
-        self.results = {
-            'accuracy': {},
-            'precision': {},
-            'recall': {},
-            'f1': {},
-            'training_time': {},
-            'prediction_time': {},
-            'cv_predictions': {},
-            'confusion_matrices': {},
-            'feature_importance': {}
-        }
-        
-        # Define preprocessing pipeline (scaling)
-        scaler = StandardScaler()
-        
-        best_score = 0
-        
-        # Evaluate each classifier
-        for name, clf in self.classifiers.items():
-            print(f"Evaluating {name}...")
-            start_time = time.time()
-            
-            # Create pipeline with preprocessing
-            pipeline = Pipeline([
-                ('scaler', scaler),
-                ('classifier', clf)
-            ])
-            
-            # Cross-validation
-            cv_scores = cross_val_score(pipeline, X, y, cv=skf, scoring='accuracy')
-            y_pred = cross_val_predict(pipeline, X, y, cv=skf)
-            
-            # Time measurements
-            train_time = time.time() - start_time
-            start_time = time.time()
-            
-            # Get confusion matrix
-            cm = confusion_matrix(y, y_pred)
-            
-            # Store metrics
-            self.results['accuracy'][name] = cv_scores.mean()
-            self.results['precision'][name] = precision_score(y, y_pred, average='weighted')
-            self.results['recall'][name] = recall_score(y, y_pred, average='weighted')
-            self.results['f1'][name] = f1_score(y, y_pred, average='weighted')
-            self.results['training_time'][name] = train_time
-            self.results['prediction_time'][name] = time.time() - start_time
-            self.results['cv_predictions'][name] = y_pred
-            self.results['confusion_matrices'][name] = cm
-            
-            # Store feature importance if available
-            if hasattr(clf, 'feature_importances_'):
-                pipeline.fit(X, y)  # Fit on full dataset to get feature importances
-                self.results['feature_importance'][name] = pipeline.named_steps['classifier'].feature_importances_
-            
-            # Check if this is the best model so far
-            if self.results['accuracy'][name] > best_score:
-                best_score = self.results['accuracy'][name]
-                self.best_model_name = name
-                
-                # Fit the best model on the full dataset
-                best_pipeline = Pipeline([
-                    ('scaler', StandardScaler()),
-                    ('classifier', self.classifiers[name])
-                ])
-                best_pipeline.fit(X, y)
-                self.best_model = best_pipeline
-        
-        # Convert results to DataFrame
-        self.metrics_df = pd.DataFrame({
-            'Classifier': list(self.classifiers.keys()),
-            'Accuracy': [self.results['accuracy'][name] for name in self.classifiers],
-            'Precision': [self.results['precision'][name] for name in self.classifiers],
-            'Recall': [self.results['recall'][name] for name in self.classifiers],
-            'F1 Score': [self.results['f1'][name] for name in self.classifiers],
-            'Training Time (s)': [self.results['training_time'][name] for name in self.classifiers],
-            'Prediction Time (s)': [self.results['prediction_time'][name] for name in self.classifiers]
-        })
-        
-        return self
-    
-    def predict(self, X):
-        """
-        Make predictions using the best model.
-        
-        Parameters:
-        -----------
-        X : pandas DataFrame or numpy array
-            The input features
-            
-        Returns:
-        --------
-        y_pred : array
-            Predicted class labels
-        """
-        if self.best_model is None:
-            raise ValueError("Models have not been trained yet. Call fit() first.")
-            
-        return self.best_model.predict(X)
-    
-    def predict_proba(self, X):
-        """
-        Get class probabilities for prediction.
-        
-        Parameters:
-        -----------
-        X : pandas DataFrame or numpy array
-            The input features
-            
-        Returns:
-        --------
-        y_proba : array
-            Class probabilities
-        """
-        if self.best_model is None:
-            raise ValueError("Models have not been trained yet. Call fit() first.")
-            
-        return self.best_model.predict_proba(X)
+        pin_memory = True if self.device.type == 'cuda' else False
+        train_loader = DataLoader(train_subset, batch_size=self.batch_size, shuffle=True, pin_memory=pin_memory)
+        val_loader = DataLoader(val_subset, batch_size=self.batch_size, shuffle=False, pin_memory=pin_memory)
 
-    def visualize_results(self, output_dir="classifier_evaluation_results"):
+        
+        self.train_losses = []
+        self.train_accuracies = []
+        self.val_losses = []
+        self.val_accuracies = []
+        
+        best_val_acc = 0.0
+        best_epoch = 0
+        epochs_no_improve = 0
+
+        for epoch in range(1, self.epochs + 1):
+            
+            avg_train_loss, train_acc, _, _ = self._train_epoch(train_loader)
+            val_loss, val_acc, _, _ = self._validate_epoch(val_loader)
+
+            self.train_losses.append(avg_train_loss)
+            self.train_accuracies.append(train_acc)
+            self.val_losses.append(val_loss)
+            self.val_accuracies.append(val_acc)
+
+
+            if epoch % 5 == 0:
+                print(f"Epoch {epoch}/{self.epochs} - "
+                    f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.4f}, "
+                    f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
+
+
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                best_epoch = epoch
+                
+                if self.save_best:
+                    self.best_results = self.add_row(["Train/Valid", train_acc, val_acc, epoch])
+                    torch.save(self.model.state_dict(), self.save_path)
+                
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+                if self.early_stopping and epochs_no_improve >= self.patience:
+                    print(f"Early stopping triggered at epoch {epoch} (no improvement in {self.patience} epochs).")
+                    break
+
+        
+        if self.save_best and best_val_acc > 0:
+            try:
+                self.model.load_state_dict(torch.load(self.save_path))
+            except Exception as e:
+                print(f"Warning: Could not load the best model from '{self.save_path}' (error: {e}).")
+
+        self.visualizer.plot_loss(self.train_losses, self.val_losses, save_path="split_loss_curve.png")
+        self.visualizer.plot_accuracy(self.train_accuracies, self.val_accuracies, save_path="split_accuracy_curve.png")
+
+        if test_loader:
+            test_loss, test_acc, _, _ = self._validate_epoch(test_loader)
+            print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}")
+            self.best_results = self.add_row(["Test", None, test_acc, best_epoch])
+
+        return self.best_results
+
+    def _train_epoch(self, train_loader):
+
         """
-        Visualize and save evaluation results.
+        Trains the model for one epoch on the provided training data loader.
+
+        Args:
+            train_loader (DataLoader): DataLoader providing batches of training data.
+
+        Returns:
+            tuple: A tuple containing:
+                - avg_train_loss (float): The average training loss for the epoch.
+                - train_acc (float): The training accuracy for the epoch.
+                - all_train_preds (list): List of predicted labels for all training samples.
+                - all_train_labels (list): List of true labels for all training samples.
+        """
+
+        self.model.train()
+        total_train_loss = 0.0
+        total_train_samples = 0
+        all_train_preds = []
+        all_train_labels = []
+
+        for feature_matrix, adjacency_matrix, labels in train_loader:
+            feature_matrix = feature_matrix.to(self.device)
+            adjacency_matrix = adjacency_matrix.to(self.device)
+            labels = labels.to(self.device)
+
+            self.optimizer.zero_grad()
+            outputs = self.model(feature_matrix, adjacency_matrix)
+            loss = self.criterion(outputs, labels)
+            loss.backward()
+            self.optimizer.step()
+
+            batch_size_current = labels.size(0)
+            total_train_loss += loss.item() * batch_size_current
+            total_train_samples += batch_size_current
+            
+            preds = outputs.argmax(dim=1)
+            all_train_preds.extend(preds.detach().cpu().numpy())
+            all_train_labels.extend(labels.detach().cpu().numpy())
+
+        avg_train_loss = total_train_loss / total_train_samples if total_train_samples > 0 else 0.0
+        train_acc = accuracy_score(all_train_labels, all_train_preds)
+        
+        return avg_train_loss, train_acc, all_train_preds, all_train_labels
+
+    def _validate_epoch(self, data_loader):
+        """Validate the model on the given data loader."""
+        self.model.eval()
+        total_loss = 0.0
+        total_samples = 0
+        all_preds = []
+        all_labels = []
+        
+        with torch.no_grad():
+            for feature_matrix, adjacency_matrix, labels in data_loader:
+                feature_matrix = feature_matrix.to(self.device)
+                adjacency_matrix = adjacency_matrix.to(self.device)
+                labels = labels.to(self.device)
+
+                outputs = self.model(feature_matrix, adjacency_matrix)
+                loss = self.criterion(outputs, labels)
+                
+                batch_size_current = labels.size(0)
+                total_loss += loss.item() * batch_size_current
+                total_samples += batch_size_current
+                
+                preds = outputs.argmax(dim=1)
+
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+                
+        avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
+        accuracy = accuracy_score(all_labels, all_preds) if total_samples > 0 else 0.0
+        
+        return avg_loss, accuracy, all_preds, all_labels
+
+    def add_row(self, data):
+        """Add a new row to the results DataFrame."""
+        new_row = pd.DataFrame([data], columns=self.best_results.columns)
+        return pd.concat([self.best_results, new_row], ignore_index=True)
+
+    def _custom_split(self, dataset, train_ratio=0.7, val_ratio=0.3, test_ratio=0.0, random_state=42):
+        """
+        Split dataset into stratified train, validation, and optionally test sets.
         
         Parameters:
-        -----------
-        output_dir : str
-            Directory to save visualizations
+        - dataset: Dataset to split
+        - train_ratio: Proportion of data for training
+        - val_ratio: Proportion of data for validation
+        - test_ratio: Proportion of data for testing (if 0, no test set is created)
+        - random_state: Random seed for reproducibility
+        
+        Returns:
+        - List of indices for each split
         """
-        if not self.results:
-            raise ValueError("No results to visualize. Call fit() first.")
+        labels = np.array(dataset.labels)
+        unique_classes = np.unique(labels)
+        
+        train_idx, val_idx, test_idx = [], [], []
+        np.random.seed(random_state)
+        
+        for cls in unique_classes:
+            cls_indices = np.where(labels == cls)[0]
+            np.random.shuffle(cls_indices)
             
-        # Create output directory
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Save metrics table
-        self.metrics_df.to_csv(f"{output_dir}/classifier_metrics.csv", index=False)
-        
-        # Plot accuracy comparison
-        plt.figure(figsize=(12, 6))
-        accuracy_df = pd.DataFrame(self.results['accuracy'].items(), columns=['Classifier', 'Accuracy'])
-        sns.barplot(x='Classifier', y='Accuracy', data=accuracy_df)
-        plt.title('Classifier Accuracy Comparison')
-        plt.ylim(accuracy_df['Accuracy'].min() * 0.9, min(1.0, accuracy_df['Accuracy'].max() * 1.1))
-        plt.xticks(rotation=45, ha='right')
-        plt.tight_layout()
-        plt.savefig(f"{output_dir}/accuracy_comparison.png")
-        plt.close()
-        
-        # Plot metrics comparison
-        metrics_df = pd.melt(self.metrics_df, 
-                            id_vars=['Classifier'], 
-                            value_vars=['Accuracy', 'Precision', 'Recall', 'F1 Score'],
-                            var_name='Metric', value_name='Value')
-        
-        plt.figure(figsize=(14, 8))
-        sns.barplot(x='Classifier', y='Value', hue='Metric', data=metrics_df)
-        plt.title('Classifier Performance Metrics')
-        plt.xticks(rotation=45, ha='right')
-        plt.legend(title='Metric', bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-        plt.savefig(f"{output_dir}/metrics_comparison.png")
-        plt.close()
-        
-        # Plot training and prediction times
-        times_df = pd.melt(self.metrics_df, 
-                          id_vars=['Classifier'], 
-                          value_vars=['Training Time (s)', 'Prediction Time (s)'],
-                          var_name='Time Metric', value_name='Seconds')
-        
-        plt.figure(figsize=(12, 6))
-        sns.barplot(x='Classifier', y='Seconds', hue='Time Metric', data=times_df)
-        plt.title('Classifier Time Performance')
-        plt.xticks(rotation=45, ha='right')
-        plt.tight_layout()
-        plt.savefig(f"{output_dir}/time_comparison.png")
-        plt.close()
-        
-        # Plot confusion matrices for each classifier
-        for name, cm in self.results['confusion_matrices'].items():
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                       xticklabels=self.classes_, yticklabels=self.classes_)
-            plt.title(f'Confusion Matrix - {name}')
-            plt.ylabel('True Label')
-            plt.xlabel('Predicted Label')
-            plt.tight_layout()
-            plt.savefig(f"{output_dir}/confusion_matrix_{name.replace(' ', '_')}.png")
-            plt.close()
-        
-        # Plot feature importance for models that support it
-        if self.results['feature_importance']:
-            for name, importance in self.results['feature_importance'].items():
-                plt.figure(figsize=(12, len(importance) * 0.3 + 2))
+            if test_ratio > 0:
+                # Three-way split (train/valid/test)
+                train_size = int(len(cls_indices) * train_ratio)
+                val_size = int(len(cls_indices) * val_ratio)
                 
-                # Create a DataFrame for the feature importance
-                feature_names = [f"Feature {i}" for i in range(len(importance))]
-                importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': importance})
-                importance_df = importance_df.sort_values('Importance', ascending=False)
+                train_idx.extend(cls_indices[:train_size])
+                val_idx.extend(cls_indices[train_size:train_size + val_size])
+                test_idx.extend(cls_indices[train_size + val_size:])
+            else:
+                # Two-way split (train/valid)
+                train_size = int(len(cls_indices) * train_ratio)
                 
-                # Plot top 20 features (or all if less than 20)
-                top_n = min(20, len(importance_df))
-                sns.barplot(x='Importance', y='Feature', data=importance_df.head(top_n))
-                plt.title(f'Feature Importance - {name}')
-                plt.tight_layout()
-                plt.savefig(f"{output_dir}/feature_importance_{name.replace(' ', '_')}.png")
-                plt.close()
-                
-                # Save the full feature importance data
-                importance_df.to_csv(f"{output_dir}/feature_importance_{name.replace(' ', '_')}.csv", index=False)
-    
-    def save_best_model(self, filename="best_eeg_classifier.joblib"):
-        """
-        Save the best model to file.
+                train_idx.extend(cls_indices[:train_size])
+                val_idx.extend(cls_indices[train_size:])
         
-        Parameters:
-        -----------
-        filename : str
-            File path to save the model
-        """
-        if self.best_model is None:
-            raise ValueError("No best model to save. Call fit() first.")
-            
-        joblib.dump(self.best_model, filename)
-        print(f"Best model ({self.best_model_name}) saved to {filename}")
-        
-        # Save label encoder if we used it
-        if hasattr(self, 'label_encoder') and len(self.label_encoder.classes_) > 0:
-            encoder_filename = filename.replace('.joblib', '_label_encoder.joblib')
-            joblib.dump(self.label_encoder, encoder_filename)
-            print(f"Label encoder saved to {encoder_filename}")
-    
-    def generate_report(self, output_dir="classifier_evaluation_results"):
-        """
-        Generate a comprehensive performance report.
-        
-        Parameters:
-        -----------
-        output_dir : str
-            Directory to save the report
-        """
-        if not self.results:
-            raise ValueError("No results to report. Call fit() first.")
-            
-        # Create output directory
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Generate text report
-        with open(f"{output_dir}/classification_report.txt", 'w') as f:
-            f.write("EEG CLASSIFIER EVALUATION REPORT\n")
-            f.write("===============================\n\n")
-            
-            f.write("SUMMARY\n")
-            f.write("-------\n")
-            f.write(f"Best classifier: {self.best_model_name}\n")
-            f.write(f"Best accuracy: {self.results['accuracy'][self.best_model_name]:.4f}\n\n")
-            
-            f.write("DETAILED METRICS\n")
-            f.write("---------------\n")
-            f.write(self.metrics_df.to_string(index=False))
-            f.write("\n\n")
-            
-            f.write("CLASSIFICATION REPORTS\n")
-            f.write("---------------------\n")
-            for name in self.classifiers:
-                f.write(f"\n{name}:\n")
-                y_pred = self.results['cv_predictions'][name]
-                report = classification_report(
-                    self.label_encoder.inverse_transform(y_pred) if hasattr(self, 'label_encoder') and len(self.label_encoder.classes_) > 0 else y_pred,
-                    self.label_encoder.inverse_transform(y_pred) if hasattr(self, 'label_encoder') and len(self.label_encoder.classes_) > 0 else y_pred
-                )
-                f.write(report)
-                f.write("\n")
-        
-        print(f"Evaluation report saved to {output_dir}/classification_report.txt")
+        if test_ratio > 0:
+            return train_idx, val_idx, test_idx
+        else:
+            return train_idx, val_idx
