@@ -5,12 +5,16 @@ from tqdm import tqdm
 import warnings
 from multiprocessing import Pool, cpu_count
 
-
+import os
 from typing import List, Tuple, Optional
 warnings.filterwarnings('ignore')
 
 from feature_extraction import *
 from utils import *
+
+def create_dir(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
 
 
 class OptimizedDataProcessor:
@@ -150,12 +154,13 @@ def save_final_results(
     output_dir: Path,
     features: np.ndarray,
     labels: np.ndarray,
-    connections: np.ndarray
+    connections: np.ndarray,
+    subject
 ):
     """Save final results"""
-    np.save(output_dir / 'features.npy', features)
-    np.save(output_dir / 'labels.npy', labels)
-    np.save(output_dir / 'connections.npy', connections)
+    np.save(output_dir / subject / f'{subject}_features.npy', features)
+    np.save(output_dir / subject / f'{subject}_labels.npy', labels)
+    np.save(output_dir /subject / f'{subject}_connections.npy', connections)
 
 def save_intermediate_results(
     output_dir: Path,

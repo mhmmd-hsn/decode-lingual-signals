@@ -19,7 +19,7 @@ def extract_word_level_features_optimized(
     max_samples: Optional[int] = None,
     n_workers: Optional[int] = None,
     use_reduced_channels: bool = True,
-    batch_size: int = 1000
+    batch_size: int = 1000,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     if output_dir is None:
@@ -51,14 +51,16 @@ def extract_word_level_features_optimized(
     print(f"Using {n_channels} channels")
     print(f"Batch size: {batch_size}")
     
-    all_trials = []
     word_to_label = {}
     label_counter = 0
     
     mat_files = list(root_path.glob("*.mat"))
     print(f"Found {len(mat_files)} .mat files")
-
+    
     for file_path in tqdm(mat_files, desc="Collecting trials"):
+
+        subject = str(file_path).split("results")[1].split("_")[0]
+
         trials, label_counter = load_trials_from_file(
             file_path, 
             word_to_label, 
@@ -67,71 +69,53 @@ def extract_word_level_features_optimized(
             n_channels,
             max_samples
         )
-        all_trials.extend(trials)
+
+        create_dir(f"zuco/{subject}")
+        with open(output_dir / subject /f'{subject}_trials.pkl', 'wb') as f:
+            pickle.dump(trials, f)
+
+        print(f"\nCollected {len(trials)} trials from {subject}")
+        print(f"Unique words with valid EEG: {len(word_to_label)}")
         
-        if max_samples and len(all_trials) >= max_samples:
-            all_trials = all_trials[:max_samples]
-            break
-    
-    print(f"\nCollected {len(all_trials)} trials")
-    print(f"Unique words with valid EEG: {len(word_to_label)}")
-    
-    # Save metadata
+        if max_samples and len(trials) >= max_samples:
+            trials = trials[:max_samples]
+
+        n_batches = (len(trials) + batch_size - 1) // batch_size
+
+        all_features = []
+        all_labels = []
+        all_connections = []
+
+        for batch_idx in range(n_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, len(trials))
+            batch = trials[start_idx:end_idx]
+            
+            print(f"\nProcessing batch {batch_idx + 1}/{n_batches} ({len(batch)} samples)")
+            
+            features, labels, connections = processor.process_batch(batch, n_workers)
+            
+            all_features.append(features)
+            all_labels.append(labels)
+            all_connections.append(connections)
+
+        features_array = np.vstack(all_features)
+        labels_array = np.hstack(all_labels)
+        connections_array = np.vstack(all_connections)
+
+        print(f"\nProcessing complete!")
+        print(f"Features shape: {features_array.shape}")
+        print(f"Labels shape: {labels_array.shape}")
+        print(f"Connections shape: {connections_array.shape}")
+
+        save_final_results(output_dir, features_array, labels_array, connections_array, subject)
+
+
     save_metadata(output_dir, word_to_label, channel_indices, use_reduced_channels, recommended_channels, n_channels)
-
-    with open(output_dir / 'all_trials.pkl', 'wb') as f:
-        pickle.dump(all_trials, f)
-    
-
-    all_features = []
-    all_labels = []
-    all_connections = []
-    
-    n_batches = (len(all_trials) + batch_size - 1) // batch_size
-    
-    for batch_idx in range(n_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min((batch_idx + 1) * batch_size, len(all_trials))
-        batch = all_trials[start_idx:end_idx]
-        
-        print(f"\nProcessing batch {batch_idx + 1}/{n_batches} ({len(batch)} samples)")
-        
-        features, labels, connections = processor.process_batch(batch, n_workers)
-        
-        all_features.append(features)
-        all_labels.append(labels)
-        all_connections.append(connections)
-        
-        # Save intermediate results for very large datasets
-        if len(all_trials) > 10000 and (batch_idx + 1) % 10 == 0:
-            save_intermediate_results(
-                output_dir, 
-                all_features, 
-                all_labels, 
-                all_connections, 
-                batch_idx
-            )
-    
-    # Concatenate all results
-    features_array = np.vstack(all_features)
-    labels_array = np.hstack(all_labels)
-    connections_array = np.vstack(all_connections)
-    
-    print(f"\nProcessing complete!")
-    print(f"Features shape: {features_array.shape}")
-    print(f"Labels shape: {labels_array.shape}")
-    print(f"Connections shape: {connections_array.shape}")
-    
-    # Save final results
-    save_final_results(output_dir, features_array, labels_array, connections_array)
-    
-    # Save feature names
     feature_names = get_feature_names()
     with open(output_dir / 'feature_names.json', 'w') as f:
         json.dump(feature_names, f, indent=2)
     
-    return features_array, labels_array, connections_array
-
 def load_trials_from_file(
     file_path: Path,
     word_to_label: Dict[str, int],
@@ -277,7 +261,7 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
     
-    features, labels, connections = extract_word_level_features_optimized(
+    extract_word_level_features_optimized(
         root_path=args.input,
         output_dir=args.output,
         max_samples=args.max_samples,
