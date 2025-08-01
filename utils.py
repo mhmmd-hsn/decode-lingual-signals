@@ -194,3 +194,49 @@ def save_metadata(
         }
         with open(output_dir / 'channel_info.json', 'w') as f:
             json.dump(channel_info, f, indent=2)
+
+def is_valid_eeg(eeg):
+    """Check if EEG data has valid shape (not (2,) which indicates no data)"""
+    if len(eeg.shape) != 2:
+        return False
+    # Additional check: ensure it's not the invalid (2,) shape
+    if eeg.shape == (2,):
+        return False
+    return True
+
+def has_valid_eeg_trials(f, eeg_data) -> bool:
+  
+    if hasattr(eeg_data, 'shape') and eeg_data.shape == (2,):
+        return False
+    
+
+    if hasattr(eeg_data, 'dtype') and eeg_data.dtype == 'object':
+        if len(eeg_data.shape) == 2:
+            n_trials = eeg_data.shape[0]
+        elif len(eeg_data.shape) == 1:
+            n_trials = eeg_data.shape[0]
+        else:
+            n_trials = 1
+ 
+        for trial_idx in range(n_trials):
+            if len(eeg_data.shape) == 2:
+                trial_ref = eeg_data[trial_idx, 0]
+            else:
+                trial_ref = eeg_data[trial_idx]
+            
+            if trial_ref:
+                try:
+                    actual_eeg = f[trial_ref][:]
+                    if is_valid_eeg(actual_eeg):
+                        return True
+                except:
+                    continue
+    else:
+        # Direct EEG data
+        try:
+            actual_eeg = eeg_data[:]
+            return is_valid_eeg(actual_eeg)
+        except:
+            return False
+    
+    return False
