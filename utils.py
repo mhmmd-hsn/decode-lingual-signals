@@ -207,7 +207,10 @@ def is_valid_eeg(eeg):
     # Additional check: ensure it's not the invalid (2,) shape
     if eeg.shape == (2,):
         return False
+    if eeg.shape[0] < 50:
+        return False
     return True
+
 
 def has_valid_eeg_trials(f, eeg_data) -> bool:
   

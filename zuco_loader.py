@@ -51,6 +51,7 @@ def extract_word_level_features_optimized(
     print(f"Using {n_channels} channels")
     print(f"Batch size: {batch_size}")
     
+    all_trials = []
     word_to_label = {}
     label_counter = 0
     
@@ -70,9 +71,7 @@ def extract_word_level_features_optimized(
             max_samples
         )
 
-        create_dir(f"zuco/{subject}")
-        with open(output_dir / subject /f'{subject}_trials.pkl', 'wb') as f:
-            pickle.dump(trials, f)
+        all_trials.append(trials)
 
         print(f"\nCollected {len(trials)} trials from {subject}")
         print(f"Unique words with valid EEG: {len(word_to_label)}")
@@ -80,41 +79,45 @@ def extract_word_level_features_optimized(
         if max_samples and len(trials) >= max_samples:
             trials = trials[:max_samples]
 
-        n_batches = (len(trials) + batch_size - 1) // batch_size
 
-        all_features = []
-        all_labels = []
-        all_connections = []
+    with open(output_dir / 'all_trials.pkl', 'wb') as f:
+        pickle.dump(trials, f)
 
-        for batch_idx in range(n_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, len(trials))
-            batch = trials[start_idx:end_idx]
+        # n_batches = (len(trials) + batch_size - 1) // batch_size
+
+        # all_trials = []
+        # all_labels = []
+        # all_connections = []
+
+        # for batch_idx in range(n_batches):
+        #     start_idx = batch_idx * batch_size
+        #     end_idx = min((batch_idx + 1) * batch_size, len(trials))
+        #     batch = trials[start_idx:end_idx]
             
-            print(f"\nProcessing batch {batch_idx + 1}/{n_batches} ({len(batch)} samples)")
+        #     print(f"\nProcessing batch {batch_idx + 1}/{n_batches} ({len(batch)} samples)")
             
-            features, labels, connections = processor.process_batch(batch, n_workers)
+        #     features, labels, connections = processor.process_batch(batch, n_workers)
             
-            all_features.append(features)
-            all_labels.append(labels)
-            all_connections.append(connections)
+        #     all_features.append(features)
+        #     all_labels.append(labels)
+        #     all_connections.append(connections)
 
-        features_array = np.vstack(all_features)
-        labels_array = np.hstack(all_labels)
-        connections_array = np.vstack(all_connections)
+        # features_array = np.vstack(all_features)
+        # labels_array = np.hstack(all_labels)
+        # connections_array = np.vstack(all_connections)
 
-        print(f"\nProcessing complete!")
-        print(f"Features shape: {features_array.shape}")
-        print(f"Labels shape: {labels_array.shape}")
-        print(f"Connections shape: {connections_array.shape}")
+        # print(f"\nProcessing complete!")
+        # print(f"Features shape: {features_array.shape}")
+        # print(f"Labels shape: {labels_array.shape}")
+        # print(f"Connections shape: {connections_array.shape}")
 
-        save_final_results(output_dir, features_array, labels_array, connections_array, subject)
+        # save_final_results(output_dir, features_array, labels_array, connections_array, subject)
 
 
     save_metadata(output_dir, word_to_label, channel_indices, use_reduced_channels, recommended_channels, n_channels)
-    feature_names = get_feature_names()
-    with open(output_dir / 'feature_names.json', 'w') as f:
-        json.dump(feature_names, f, indent=2)
+    # feature_names = get_feature_names()
+    # with open(output_dir / 'feature_names.json', 'w') as f:
+    #     json.dump(feature_names, f, indent=2)
     
 def load_trials_from_file(
     file_path: Path,
@@ -266,7 +269,7 @@ if __name__ == '__main__':
         output_dir=args.output,
         max_samples=args.max_samples,
         n_workers=args.n_workers,
-        use_reduced_channels=True,
+        use_reduced_channels=False,
         batch_size=args.batch_size
     )
     
