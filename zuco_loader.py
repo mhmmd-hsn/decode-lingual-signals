@@ -26,7 +26,7 @@ def extract_word_level_features_optimized(
         output_dir = root_path
     
     config = FeatureConfig(n_workers=n_workers)
-    processor = OptimizedDataProcessor(config)
+    # processor = OptimizedDataProcessor(config)
     
     root_path = Path(root_path)
     output_dir = Path(output_dir)
@@ -44,7 +44,7 @@ def extract_word_level_features_optimized(
     else:
         channel_indices = None
         n_channels = 105
-        with open('zuco/eeg_channel_mapping.json', 'r') as f:
+        with open(root_path / 'eeg_channel_mapping.json', 'r') as f:
             f = json.load(f)
             recommended_channels = f['channel_to_index']
     
@@ -71,7 +71,7 @@ def extract_word_level_features_optimized(
             max_samples
         )
 
-        all_trials.append(trials)
+        all_trials.extend(trials)
 
         print(f"\nCollected {len(trials)} trials from {subject}")
         print(f"Unique words with valid EEG: {len(word_to_label)}")
@@ -79,9 +79,9 @@ def extract_word_level_features_optimized(
         if max_samples and len(trials) >= max_samples:
             trials = trials[:max_samples]
 
-
+    
     with open(output_dir / 'all_trials.pkl', 'wb') as f:
-        pickle.dump(trials, f)
+        pickle.dump(all_trials, f)
 
         # n_batches = (len(trials) + batch_size - 1) // batch_size
 
@@ -113,7 +113,7 @@ def extract_word_level_features_optimized(
 
         # save_final_results(output_dir, features_array, labels_array, connections_array, subject)
 
-
+    
     save_metadata(output_dir, word_to_label, channel_indices, use_reduced_channels, recommended_channels, n_channels)
     # feature_names = get_feature_names()
     # with open(output_dir / 'feature_names.json', 'w') as f:
@@ -148,7 +148,7 @@ def load_trials_from_file(
                     break
                     
             except Exception as e:
-                print(f"Error processing sentence {sent_idx}: {e}")
+                # print(f"Error processing sentence {sent_idx}: {e}")
                 continue
     
     return trials, label_counter

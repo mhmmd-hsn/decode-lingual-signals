@@ -187,7 +187,8 @@ def save_metadata(
 ):
     """Save metadata files"""
     # Save word-label mapping
-    with open(output_dir / 'word_to_label.json', 'w') as f:
+    create_dir(f"{output_dir}/info")
+    with open(output_dir / 'info/word_to_label.json', 'w') as f:
         json.dump(word_to_label, f, indent=2)
     
     # Save channel information

@@ -637,4 +637,55 @@ class FeatureExtractor:
         
         return resampled
     
+    def intelligent_resample_(self, eeg_trial: np.ndarray, target_length: int) -> np.ndarray:
+        """
+        Intelligently resample EEG trial to target length using appropriate method
+        
+        Args:
+            eeg_trial: EEG data with shape [channels, timepoints]
+            target_length: Target number of timepoints
+            
+        Returns:
+            Resampled EEG trial with shape [channels, target_length]
+        """
+        from scipy import signal as scipy_signal
+        from scipy.interpolate import interp1d
+        
+        n_channels, current_length = eeg_trial.shape
+        
+        if current_length == target_length:
+            return eeg_trial
+        
+        # For upsampling: use cubic spline interpolation
+        if current_length < target_length:
+            # Create interpolation points
+            x_old = np.linspace(0, 1, current_length)
+            x_new = np.linspace(0, 1, target_length)
+            
+            # Use cubic interpolation for smooth upsampling
+            # interp1d can handle 2D arrays along axis=1 (timepoints)
+            f = interp1d(x_old, eeg_trial, kind='cubic', axis=1, fill_value='extrapolate')
+            resampled = f(x_new)
+            
+        # For downsampling: use anti-aliasing filter
+        else:
+            # Calculate downsampling factor
+            factor = current_length / target_length
+            
+            
+            cutoff = 0.5 / factor
+            
+            # Design filter
+            b, a = scipy_signal.butter(8, cutoff, btype='low')
+            
+            # Apply filter to all channels simultaneously
+            # filtfilt works along the last axis by default, so we need axis=1
+            filtered = scipy_signal.filtfilt(b, a, eeg_trial, axis=1)
+            
+            # Downsample using scipy's resample (includes anti-aliasing)
+            # resample works along the last axis by default, so we need axis=1
+            resampled = scipy_signal.resample(filtered, target_length, axis=1)
+        
+        return resampled
+        
 

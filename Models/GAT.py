@@ -38,7 +38,6 @@ class GraphAttentionLayer(nn.Module):
 
         B, N, _ = h.size()
 
-        
         h = F.dropout(h, p=self.dropout, training=self.training)
         Wh = torch.matmul(h, self.W)                     # (B, N, head_dim * n_heads)
         Wh = Wh.view(B, N, self.n_heads, self.head_dim)           # (B, N, n_heads, head_dim)
@@ -51,8 +50,8 @@ class GraphAttentionLayer(nn.Module):
         a_input = torch.cat([Wh_i.repeat(1, 1, 1, N, 1), 
                              Wh_j.repeat(1, 1, N, 1, 1)], dim=-1)  # (B, n_heads, N, N, 2*head_dim)
         
-
-        e = torch.matmul(a_input, self.a.unsqueeze(1).unsqueeze(1))  # (B, n_heads, N, N, 1)
+        e = torch.matmul(a_input, self.a.unsqueeze(0).unsqueeze(2))  # (B, n_heads, N, N, 1)
+        print(e.shape)
         e = e.squeeze(-1)                                         # (B, n_heads, N, N)
         e = self.leakyrelu(e)                                     # Apply LeakyReLU
 
@@ -85,9 +84,9 @@ class GATModel(nn.Module):
     def __init__(self, num_timepoints=2500, num_classes=4):
         super(GATModel, self).__init__()
 
-        self.agacn1 = GraphAttentionLayer(in_features=num_timepoints, out_features=130, n_heads=10, concat=True, dropout=0.6)
-        self.agacn2 = GraphAttentionLayer(in_features=125, out_features=70, n_heads=10, concat=True, dropout=0.6)
-        self.agacn3 = GraphAttentionLayer(in_features=70, out_features=130, n_heads=10, concat=False, dropout=0.6)
+        self.agacn1 = GraphAttentionLayer(in_features=num_timepoints, out_features=130, n_heads=5, concat=True, dropout=0.3)
+        self.agacn2 = GraphAttentionLayer(in_features=130, out_features=70, n_heads=5, concat=True, dropout=0.3)
+        self.agacn3 = GraphAttentionLayer(in_features=70, out_features=130, n_heads=5, concat=False, dropout=0.3)
 
         self.fc = nn.Linear(70 * 130, num_classes)
 
@@ -116,4 +115,3 @@ if __name__ == '__main__':
 
     model = GATModel(num_timepoints=2000, num_classes=9)
     model.count_parameters()
-
