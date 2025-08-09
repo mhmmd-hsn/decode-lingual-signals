@@ -51,7 +51,7 @@ class GraphAttentionLayer(nn.Module):
                              Wh_j.repeat(1, 1, N, 1, 1)], dim=-1)  # (B, n_heads, N, N, 2*head_dim)
         
         e = torch.matmul(a_input, self.a.unsqueeze(0).unsqueeze(2))  # (B, n_heads, N, N, 1)
-        print(e.shape)
+        # print(e.shape)
         e = e.squeeze(-1)                                         # (B, n_heads, N, N)
         e = self.leakyrelu(e)                                     # Apply LeakyReLU
 

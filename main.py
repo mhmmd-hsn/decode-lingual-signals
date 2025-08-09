@@ -132,7 +132,8 @@ if __name__ == '__main__':
         save_best=True,
         save_path="Outputs/best_model.pth",
         early_stopping=False,
-        patience=10
+        patience=10,
+        top_k=10
     )
     
     if args.training == '2-cv':
